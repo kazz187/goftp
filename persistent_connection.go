@@ -6,12 +6,15 @@ package goftp
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"net"
 	"net/textproto"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -448,12 +451,10 @@ func (pconn *persistentConn) listenActive() (*net.TCPListener, error) {
 		listenAddr = net.JoinHostPort(localHost, listenAddr[1:])
 	}
 
-	tcpAddr, err := net.ResolveTCPAddr("tcp", listenAddr)
-	if err != nil {
-		return nil, ftpError{err: fmt.Errorf("error parsing active listen addr: %s (%s)", err, listenAddr)}
+	lc := net.ListenConfig{
+		Control: listenControl,
 	}
-
-	listener, err := net.ListenTCP("tcp", tcpAddr)
+	listener, err := lc.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return nil, ftpError{err: fmt.Errorf("error listening on %s for active transfer: %s", listenAddr, err)}
 	}
@@ -489,7 +490,7 @@ func (pconn *persistentConn) listenActive() (*net.TCPListener, error) {
 		}
 	}
 
-	return listener, nil
+	return listener.(*net.TCPListener), nil
 }
 
 func (pconn *persistentConn) setType(t string) error {
@@ -529,5 +530,19 @@ func (pconn *persistentConn) logInTLS() error {
 
 	pconn.debug("successfully upgraded to TLS")
 
+	return nil
+}
+
+func listenControl(network string, address string, c syscall.RawConn) error {
+	var operr error
+	var fn = func(s uintptr) {
+		operr = unix.SetsockoptInt(int(s), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+	}
+	if err := c.Control(fn); err != nil {
+		return err
+	}
+	if operr != nil {
+		return operr
+	}
 	return nil
 }
